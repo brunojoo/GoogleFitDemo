@@ -1,73 +1,71 @@
 package com.example.bruno.googlefittest;
 
-import android.Manifest;
-import android.app.Activity;
+
 import android.content.Intent;
 import android.content.IntentSender;
-import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.net.Uri;
-import android.renderscript.Element;
 import android.support.annotation.NonNull;
-import android.support.v4.app.ActivityCompat;
-import android.support.v4.app.Fragment;
+import android.support.annotation.Nullable;
 import android.support.v4.app.FragmentActivity;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.android.gms.auth.api.signin.GoogleSignIn;
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
 import com.google.android.gms.auth.api.signin.GoogleSignInClient;
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.Scopes;
 import com.google.android.gms.common.SignInButton;
 import com.google.android.gms.common.api.ApiException;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.common.api.Scope;
+import com.google.android.gms.common.api.Status;
 import com.google.android.gms.fitness.Fitness;
-import com.google.android.gms.fitness.FitnessOptions;
-import com.google.android.gms.fitness.data.Bucket;
 import com.google.android.gms.fitness.data.DataPoint;
-import com.google.android.gms.fitness.data.DataSet;
+import com.google.android.gms.fitness.data.DataSource;
 import com.google.android.gms.fitness.data.DataType;
 import com.google.android.gms.fitness.data.Field;
-import com.google.android.gms.fitness.request.DataReadRequest;
+import com.google.android.gms.fitness.data.Value;
+import com.google.android.gms.fitness.request.DataSourcesRequest;
 import com.google.android.gms.fitness.request.OnDataPointListener;
-import com.google.android.gms.fitness.result.DataReadResponse;
-import com.google.android.gms.tasks.OnFailureListener;
-import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.fitness.request.SensorRequest;
+import com.google.android.gms.fitness.result.DataSourcesResult;
 import com.google.android.gms.tasks.Task;
 import com.squareup.picasso.Picasso;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 
 
-public class MainActivity extends  FragmentActivity {
 
-    private static final String LOG_TAG = "DEBUGTAG" ;
-    private static final int GOOGLE_FIT_PERMISSIONS_REQUEST_CODE = 1;
+public class MainActivity extends  FragmentActivity implements OnDataPointListener,
+        GoogleApiClient.ConnectionCallbacks,
+        GoogleApiClient.OnConnectionFailedListener {
+
+    private static final int REQUEST_OAUTH = 1;
+    private static final String AUTH_PENDING = "auth_state_pending";
     private static final int RC_SIGN_IN = 2;
     private GoogleSignInClient mGoogleSignInClient;
-    private SignInButton signInButton;
-
-    // Set the dimensions of the sign-in button.
+    private GoogleApiClient mApiClient;
     private GoogleSignInAccount acct;
+
     private TextView nameAcct;
     private ImageView imgAcct;
+    private SignInButton signInButton;
 
-
+    private boolean authInProgress = false;
+    private int aux;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
 
         signInButton = findViewById(R.id.sign_in_button);
         signInButton.setSize(SignInButton.SIZE_STANDARD);
@@ -97,36 +95,22 @@ public class MainActivity extends  FragmentActivity {
             setGooglePlusButtonText(signInButton,"Sign out");
             String personName = acct.getDisplayName();
             Uri personPhoto = acct.getPhotoUrl();
-
-
             Picasso.get().load(String.valueOf(personPhoto)).transform(new CropSquareTransformation()).into(imgAcct);
             nameAcct.setText(personName);
         }
 
 
-        //Google Fit
-        FitnessOptions fitnessOptions = FitnessOptions.builder()
-                .addDataType(DataType.TYPE_STEP_COUNT_DELTA, FitnessOptions.ACCESS_READ)
-                .addDataType(DataType.AGGREGATE_STEP_COUNT_DELTA, FitnessOptions.ACCESS_READ)
-                .build();
 
-        if (!GoogleSignIn.hasPermissions(GoogleSignIn.getLastSignedInAccount(this), fitnessOptions)) {
-            GoogleSignIn.requestPermissions(this,
-                    GOOGLE_FIT_PERMISSIONS_REQUEST_CODE,
-                    GoogleSignIn.getLastSignedInAccount(this),
-                    fitnessOptions);
-        } else {
-            try {
-                accessGoogleFit();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            } catch (ExecutionException e) {
-                e.printStackTrace();
-            } catch (TimeoutException e) {
-                e.printStackTrace();
-            }
+        if (savedInstanceState != null) {
+            authInProgress = savedInstanceState.getBoolean(AUTH_PENDING);
         }
 
+        mApiClient = new GoogleApiClient.Builder(this)
+                .addApi(Fitness.SENSORS_API)
+                .addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ_WRITE))
+                .addConnectionCallbacks(this)
+                .addOnConnectionFailedListener(this)
+                .build();
     }
 
 
@@ -138,6 +122,7 @@ public class MainActivity extends  FragmentActivity {
       }else{
           imgAcct.setVisibility(View.INVISIBLE);
           mGoogleSignInClient.signOut();
+          aux = 0;
           acct = null;
           setGooglePlusButtonText(signInButton,"Sign in");
           nameAcct.setText("");
@@ -168,6 +153,20 @@ public class MainActivity extends  FragmentActivity {
             handleSignInResult(task);
         }
 
+
+        if( requestCode == REQUEST_OAUTH ) {
+            authInProgress = false;
+            if( resultCode == RESULT_OK ) {
+                if( !mApiClient.isConnecting() && !mApiClient.isConnected() ) {
+                    mApiClient.connect();
+                }
+            } else if( resultCode == RESULT_CANCELED ) {
+                Log.e( "GoogleFit", "RESULT_CANCELED" );
+            }
+        } else {
+            Log.e("GoogleFit", "requestCode NOT request_oauth");
+        }
+
     }
 
 
@@ -183,79 +182,8 @@ public class MainActivity extends  FragmentActivity {
 
         }
     }
-    private void accessGoogleFit() throws InterruptedException, ExecutionException, TimeoutException {
-        Calendar cal = Calendar.getInstance();
-        cal.setTime(new Date());
-        long endTime = cal.getTimeInMillis();
-        System.out.println("endtime: "+endTime);
-        cal.add(Calendar.HOUR_OF_DAY, -60);
-        long startTime = cal.getTimeInMillis();
-        System.out.println("endtime: "+startTime);
 
 
-
-      Fitness.getHistoryClient(this, GoogleSignIn.getLastSignedInAccount(this)).readData(
-                new DataReadRequest.Builder()
-                        .setTimeRange(startTime, endTime, TimeUnit.MILLISECONDS)
-                        .bucketByTime(1, TimeUnit.DAYS)
-                        .aggregate(DataType.TYPE_STEP_COUNT_DELTA, DataType.AGGREGATE_STEP_COUNT_DELTA)
-                        .build()).
-                addOnSuccessListener(new OnSuccessListener<DataReadResponse>() {
-            @Override
-            public void onSuccess(DataReadResponse dataReadResponse) {
-                printData(dataReadResponse);
-            }
-        }).addOnFailureListener(new OnFailureListener() {
-            @Override
-            public void onFailure(@NonNull Exception e) {
-
-            }
-        });
-
-
-    }
-
-
-
-
-    public static void printData(DataReadResponse dataReadResult) {
-        // [START parse_read_data_result]
-        // If the DataReadRequest object specified aggregated data, dataReadResult will be returned
-        // as buckets containing DataSets, instead of just DataSets.
-        if (dataReadResult.getBuckets().size() > 0) {
-
-            Log.i(
-                    LOG_TAG, "Number of returned buckets of DataSets is: " + dataReadResult.getBuckets().size());
-            for (Bucket bucket : dataReadResult.getBuckets()) {
-                List<DataSet> dataSets = bucket.getDataSets();
-                for (DataSet dataSet : dataSets) {
-                    dumpDataSet(dataSet);
-                }
-            }
-        } else if (dataReadResult.getDataSets().size() > 0) {
-            Log.i(LOG_TAG, "Number of returned DataSets is: " + dataReadResult.getDataSets().size());
-            for (DataSet dataSet : dataReadResult.getDataSets()) {
-                dumpDataSet(dataSet);
-            }
-        }
-        // [END parse_read_data_result]
-    }
-
-
-    private static void dumpDataSet(DataSet dataSet) {
-        Log.i(LOG_TAG, "Data returned for Data type: " + dataSet.getDataType().getName());
-        //DateFormat dateFormat = getTimeInstance();
-
-        for (DataPoint dp : dataSet.getDataPoints()) {
-            Log.i(LOG_TAG, "Data point:");
-            Log.i(LOG_TAG, "\tType: " + dp.getDataType().getName());
-            //Log.i(LOG_TAG, "\tStart: " + dateFormat.format(dp.getStartTime(TimeUnit.MILLISECONDS)));
-            //Log.i(LOG_TAG, "\tEnd: " + dateFormat.format(dp.getEndTime(TimeUnit.MILLISECONDS)));
-            for (Field field : dp.getDataType().getFields()) {
-                Log.i(LOG_TAG, "\tField: " + field.getName() + " Value: " + dp.getValue(field));
-            }
-        }
-    }
 
     protected void setGooglePlusButtonText(SignInButton signInButton, String buttonText) {
         // Find the TextView that is inside of the SignInButton and set its text
@@ -270,6 +198,91 @@ public class MainActivity extends  FragmentActivity {
         }
     }
 
+
+    @Override
+    public void onConnected(@Nullable Bundle bundle) {
+
+        DataSourcesRequest dataSourceRequest = new DataSourcesRequest.Builder()
+                .setDataTypes( DataType.AGGREGATE_STEP_COUNT_DELTA )
+                .setDataSourceTypes( DataSource.TYPE_DERIVED )
+                .build();
+
+        ResultCallback<DataSourcesResult> dataSourcesResultCallback = new ResultCallback<DataSourcesResult>() {
+            @Override
+            public void onResult(DataSourcesResult dataSourcesResult) {
+                for( DataSource dataSource : dataSourcesResult.getDataSources() ) {
+                    if( DataType.AGGREGATE_STEP_COUNT_DELTA.equals( dataSource.getDataType() ) ) {
+                        registerFitnessDataListener(dataSource, DataType.AGGREGATE_STEP_COUNT_DELTA);
+                    }
+                }
+            }
+        };
+
+        Fitness.SensorsApi.findDataSources(mApiClient, dataSourceRequest)
+                .setResultCallback(dataSourcesResultCallback);
+    }
+
+    @Override
+    public void onConnectionSuspended(int i) {
+
+    }
+
+    @Override
+    public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+        if( !authInProgress ) {
+            try {
+                authInProgress = true;
+                connectionResult.startResolutionForResult( MainActivity.this, REQUEST_OAUTH );
+            } catch(IntentSender.SendIntentException e ) {
+
+            }
+        } else {
+            Log.e( "GoogleFit", "authInProgress" );
+        }
+    }
+
+    @Override
+    public void onDataPoint(DataPoint dataPoint) {
+        for( final Field field : dataPoint.getDataType().getFields() ) {
+            final Value value = dataPoint.getValue( field );
+             aux += value.asInt();
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (acct != null) {
+                        Toast.makeText(getApplicationContext(), "Field: " + field.getName() + " Value: " + aux, Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        mApiClient.connect();
+    }
+
+    private void registerFitnessDataListener(DataSource dataSource, DataType dataType) {
+
+        SensorRequest request = new SensorRequest.Builder()
+                .setDataSource( dataSource )
+                .setDataType( dataType )
+                .setSamplingRate( 3, TimeUnit.SECONDS )
+                .build();
+
+
+        Fitness.SensorsApi.add( mApiClient, request, this )
+                .setResultCallback(new ResultCallback<Status>() {
+                    @Override
+                    public void onResult(Status status) {
+                        if (status.isSuccess()) {
+                            Log.e( "GoogleFit", "SensorApi successfully added" );
+                        }
+                    }
+                });
+    }
 
 
 }
